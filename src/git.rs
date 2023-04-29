@@ -3,21 +3,21 @@ use std::{
     process::{exit, Command, Stdio},
 };
 
-use crate::Config;
+use crate::GitConfig;
 
-fn run(config: &Config, args: &[&str]) -> bool {
+fn run(config: &GitConfig, args: &[&str]) -> bool {
     Command::new("git")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .args(args)
-        .current_dir(&config.git_path)
+        .current_dir(&config.path)
         .status()
         .expect("Execute git command")
         .success()
 }
 
-pub fn setup(config: &Config) {
-    if let Err(err) = fs::create_dir_all(&config.git_path) {
+pub fn setup(config: &GitConfig) {
+    if let Err(err) = fs::create_dir_all(&config.path) {
         eprintln!("Could not create repository directory: {err}");
         exit(1);
     }
@@ -31,16 +31,16 @@ pub fn setup(config: &Config) {
     }
 }
 
-fn clone(config: &Config) {
+fn clone(config: &GitConfig) {
     if !run(
         config,
         &[
             "clone",
             &format!(
                 "https://{}:{}@{}",
-                config.git_username,
-                config.git_password,
-                config.git_url.trim_start_matches("https://")
+                config.username,
+                config.password,
+                config.url.trim_start_matches("https://")
             ),
             ".",
         ],
@@ -50,12 +50,12 @@ fn clone(config: &Config) {
     }
 }
 
-fn login(config: &Config) {
-    if !run(config, &["config", "user.name", &config.git_username]) {
+fn login(config: &GitConfig) {
+    if !run(config, &["config", "user.name", &config.username]) {
         eprintln!("Could not set git username");
         exit(1);
     }
-    if !run(config, &["config", "user.email", &config.git_email]) {
+    if !run(config, &["config", "user.email", &config.email]) {
         eprintln!("Could not set git email");
         exit(1);
     }
@@ -65,14 +65,14 @@ fn login(config: &Config) {
     }
 }
 
-pub fn stage(config: &Config, what: &str) -> bool {
+pub fn _stage(config: &GitConfig, what: &str) -> bool {
     run(config, &["add", what])
 }
 
-pub fn commit(config: &Config, message: &str) -> bool {
+pub fn _commit(config: &GitConfig, message: &str) -> bool {
     run(config, &["commit", "-m", message])
 }
 
-pub fn push(config: &Config) -> bool {
+pub fn _push(config: &GitConfig) -> bool {
     run(config, &["push"])
 }

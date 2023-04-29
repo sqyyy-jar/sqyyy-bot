@@ -13,51 +13,126 @@ use serenity::{
         *,
     },
     prelude::*,
+    utils::Color,
     Client,
 };
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
-    discord_token: String,
-    git_username: String,
-    git_email: String,
-    git_password: String,
-    git_url: String,
-    git_path: String,
+    discord: DiscordConfig,
+    git: GitConfig,
+    lexicon: LexiconConfig,
 }
 
-struct Handler;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordConfig {
+    token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConfig {
+    username: String,
+    email: String,
+    password: String,
+    url: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LexiconConfig {}
+
+pub struct Response {
+    success: bool,
+    title: String,
+    text: String,
+}
+
+impl Response {
+    pub fn success(title: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            title: title.into(),
+            text: text.into(),
+        }
+    }
+
+    pub fn failure(title: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            title: title.into(),
+            text: text.into(),
+        }
+    }
+
+    pub fn invalid_command() -> Self {
+        Self {
+            success: false,
+            title: "Internal error".to_string(),
+            text: "The command is invalid.".to_string(),
+        }
+    }
+
+    pub fn unimplemented() -> Self {
+        Self {
+            success: false,
+            title: "Internal error".to_string(),
+            text: "The command is not implemented.".to_string(),
+        }
+    }
+}
+
+pub struct Handler {
+    config: Config,
+}
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
-            println!("Received command interaction");
+            println!("/{}", command.data.name);
             let content = match command.data.name.as_str() {
+                "lexicon" => commands::lexicon::run(&self.config, &command.data.options),
                 "test" => commands::test::run(&command.data.options),
-                _ => "not implemented :(".to_string(),
+                _ => Response::unimplemented(),
             };
             if let Err(why) = command
                 .create_interaction_response(&ctx.http, |response| {
                     response
                         .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| message.content(content))
+                        .interaction_response_data(|message| {
+                            message.ephemeral(true).embed(|embed| {
+                                if content.success {
+                                    embed.color(Color::from_rgb(0x4b, 0xb5, 0x43));
+                                } else {
+                                    embed.color(Color::from_rgb(0xcc, 0x00, 0x00));
+                                }
+                                embed.title(&content.title).description(&content.text)
+                            })
+                        })
                 })
                 .await
             {
-                println!("Cannot respond to slash command: {}", why);
+                eprintln!("Cannot respond to slash command: {}", why);
             }
         }
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
-        let _test_command = Command::create_global_application_command(&ctx.http, |command| {
+        Command::create_global_application_command(&ctx.http, |command| {
+            commands::lexicon::register(command)
+        })
+        .await
+        .expect("Create lexicon command");
+        Command::create_global_application_command(&ctx.http, |command| {
             commands::test::register(command)
         })
         .await
-        .expect("Create global slash command(s)");
+        .expect("Create test command");
     }
 }
 
@@ -74,9 +149,9 @@ async fn main() {
         exit(1);
     }
     let config: Config = config.unwrap();
-    setup(&config);
-    let mut client = Client::builder(&config.discord_token, GatewayIntents::empty())
-        .event_handler(Handler)
+    setup(&config.git);
+    let mut client = Client::builder(&config.discord.token, GatewayIntents::empty())
+        .event_handler(Handler { config })
         .await
         .expect("Error creating client");
     if let Err(err) = client.start().await {

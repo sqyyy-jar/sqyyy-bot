@@ -1,7 +1,12 @@
-use serenity::{model::prelude::interaction::application_command::CommandDataOption, builder::CreateApplicationCommand};
+use serenity::{
+    builder::CreateApplicationCommand,
+    model::prelude::interaction::application_command::CommandDataOption,
+};
 
-pub fn run(_options: &[CommandDataOption]) -> String {
-    "Hey!".to_string()
+use crate::Response;
+
+pub fn run(_options: &[CommandDataOption]) -> Response {
+    Response::success("Test", "Hello world!")
 }
 
 pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicationCommand {
