@@ -1,8 +1,9 @@
 mod commands;
 mod git;
 
-use std::{fs, process::exit};
+use std::{fs, path::PathBuf, process::exit, sync::Mutex};
 
+use commands::lexicon::{load, Lexicon};
 use git::setup;
 use serde::Deserialize;
 use serenity::{
@@ -18,7 +19,7 @@ use serenity::{
 };
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub struct Config {
     discord: DiscordConfig,
     git: GitConfig,
@@ -26,24 +27,27 @@ pub struct Config {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub struct DiscordConfig {
     token: String,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub struct GitConfig {
     username: String,
     email: String,
     password: String,
     url: String,
-    path: String,
+    path: PathBuf,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LexiconConfig {}
+#[serde(rename_all = "kebab-case")]
+pub struct LexiconConfig {
+    file: PathBuf,
+    target_file: PathBuf,
+}
 
 pub struct Response {
     success: bool,
@@ -87,6 +91,7 @@ impl Response {
 
 pub struct Handler {
     config: Config,
+    lexicon: Mutex<Lexicon>,
 }
 
 #[async_trait]
@@ -95,7 +100,7 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(command) = interaction {
             println!("/{}", command.data.name);
             let content = match command.data.name.as_str() {
-                "lexicon" => commands::lexicon::run(&self.config, &command.data.options),
+                "lexicon" => commands::lexicon::run(self, &command.data.options),
                 "test" => commands::test::run(&command.data.options),
                 _ => Response::unimplemented(),
             };
@@ -150,8 +155,12 @@ async fn main() {
     }
     let config: Config = config.unwrap();
     setup(&config.git);
+    let lexicon = load(&config);
     let mut client = Client::builder(&config.discord.token, GatewayIntents::empty())
-        .event_handler(Handler { config })
+        .event_handler(Handler {
+            config,
+            lexicon: Mutex::new(lexicon),
+        })
         .await
         .expect("Error creating client");
     if let Err(err) = client.start().await {

@@ -65,14 +65,14 @@ fn login(config: &GitConfig) {
     }
 }
 
-pub fn _stage(config: &GitConfig, what: &str) -> bool {
+pub fn stage(config: &GitConfig, what: &str) -> bool {
     run(config, &["add", what])
 }
 
-pub fn _commit(config: &GitConfig, message: &str) -> bool {
+pub fn commit(config: &GitConfig, message: &str) -> bool {
     run(config, &["commit", "-m", message])
 }
 
-pub fn _push(config: &GitConfig) -> bool {
+pub fn push(config: &GitConfig) -> bool {
     run(config, &["push"])
 }
