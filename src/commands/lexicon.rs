@@ -10,11 +10,13 @@ use serenity::{
     builder::CreateApplicationCommand,
     json::Value,
     model::prelude::{
-        command::CommandOptionType, interaction::application_command::CommandDataOption,
+        command::CommandOptionType,
+        component::{ActionRowComponent, InputTextStyle},
+        interaction::{application_command::CommandDataOption, modal::ModalSubmitInteraction},
     },
 };
 
-use crate::{git, Config, Handler, Response};
+use crate::{git, Config, Handler, Modal, Response};
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct Lexicon {
@@ -59,39 +61,42 @@ pub fn run(handler: &Handler, options: &[CommandDataOption]) -> Response {
     if options.len() != 1 {
         return Response::invalid_command();
     }
-    let Ok(mut lexicon) = handler.lexicon.lock() else {
+    let Ok(lexicon) = handler.lexicon.lock() else {
         return Response::failure("Internal error", "Could not lock the lexicon");
     };
     let option = &options[0];
     match option.name.as_str() {
-        "add" => {
-            let options = &option.options;
-            if option.options.len() != 2 {
-                return Response::invalid_command();
-            }
-            let Some(Value::String(word)) = &options[0].value else {
-                return Response::invalid_command();
-            };
-            let Some(Value::String(description)) = &options[1].value else {
-                return Response::invalid_command();
-            };
-            let c = word.chars().next().unwrap().to_uppercase().next().unwrap();
-            let word_set = lexicon.words.entry(c).or_insert_with(BTreeMap::new);
-            if word_set.contains_key(word) {
-                return Response::failure("Query error", "The word already exists in the lexicon.");
-            }
-            word_set.insert(word.clone(), description.clone());
-            if !update_lexicon(&handler.config, &lexicon) {
-                return Response::failure("Update error", "The lexicon could not be updated.");
-            }
-            if !update_lexicon_git(&handler.config, &format!("[lexicon] Add {word}")) {
-                return Response::failure("Git error", "The lexicon could not be pushed to Git.");
-            }
-            Response::success(
-                "Success",
-                format!("Successfully updated lexicon entry for word '{word}'."),
-            )
-        }
+        "add" => Response::modal(
+            |response| {
+                response
+                    .title("Add lexicon entry")
+                    .components(|components| {
+                        components
+                            .create_action_row(|row| {
+                                row.create_input_text(|input| {
+                                    input
+                                        .label("Word")
+                                        .custom_id("lexicon:add:0")
+                                        .style(InputTextStyle::Short)
+                                        .required(true)
+                                        .min_length(2)
+                                        .max_length(50)
+                                })
+                            })
+                            .create_action_row(|row| {
+                                row.create_input_text(|input| {
+                                    input
+                                        .label("Description")
+                                        .custom_id("lexicon:add:1")
+                                        .style(InputTextStyle::Paragraph)
+                                        .required(true)
+                                        .max_length(4000)
+                                })
+                            })
+                    });
+            },
+            Modal::LexiconAdd,
+        ),
         "query" => {
             let options = &option.options;
             if option.options.len() != 1 {
@@ -109,38 +114,106 @@ pub fn run(handler: &Handler, options: &[CommandDataOption]) -> Response {
             };
             Response::success(word, entry)
         }
-        "update" => {
-            let options = &option.options;
-            if option.options.len() != 2 {
-                return Response::invalid_command();
-            }
-            let Some(Value::String(word)) = &options[0].value else {
-                return Response::invalid_command();
-            };
-            let Some(Value::String(description)) = &options[1].value else {
-                return Response::invalid_command();
-            };
-            let c = word.chars().next().unwrap().to_uppercase().next().unwrap();
-            let Some(word_set) = lexicon.words.get_mut(&c) else {
-                return Response::failure("Query error", "The word could not be found.");
-            };
-            let Some(entry) = word_set.get_mut(word) else {
-                return Response::failure("Query error", "The word could not be found.");
-            };
-            *entry = description.clone();
-            if !update_lexicon(&handler.config, &lexicon) {
-                return Response::failure("Update error", "The lexicon could not be updated.");
-            }
-            if !update_lexicon_git(&handler.config, &format!("[lexicon] Update {word}")) {
-                return Response::failure("Git error", "The lexicon could not be pushed to Git.");
-            }
-            Response::success(
-                "Success",
-                format!("Successfully updated lexicon entry for word '{word}'."),
-            )
-        }
+        "update" => Response::modal(
+            |response| {
+                response
+                    .title("Update lexicon entry")
+                    .components(|components| {
+                        components
+                            .create_action_row(|row| {
+                                row.create_input_text(|input| {
+                                    input
+                                        .label("Word")
+                                        .custom_id("lexicon:update:0")
+                                        .style(InputTextStyle::Short)
+                                        .required(true)
+                                        .min_length(2)
+                                        .max_length(50)
+                                })
+                            })
+                            .create_action_row(|row| {
+                                row.create_input_text(|input| {
+                                    input
+                                        .label("Description")
+                                        .custom_id("lexicon:update:1")
+                                        .style(InputTextStyle::Paragraph)
+                                        .required(true)
+                                        .max_length(4000)
+                                })
+                            })
+                    });
+            },
+            Modal::LexiconUpdate,
+        ),
         _ => Response::unimplemented(),
     }
+}
+
+pub async fn handle_add(handler: &Handler, submission: &mut ModalSubmitInteraction) -> Response {
+    let mut rows = submission.data.components.drain(..);
+    let mut first = rows.next().unwrap().components.into_iter();
+    let mut second = rows.next().unwrap().components.into_iter();
+    let word = first.next().unwrap();
+    let ActionRowComponent::InputText(word) = word else {unreachable!()};
+    let word = word.value;
+    let description = second.next().unwrap();
+    let ActionRowComponent::InputText(description) = description else {unreachable!()};
+    let description = description.value;
+    let c = word.chars().next().unwrap().to_uppercase().next().unwrap();
+    let Ok(mut lexicon) = handler.lexicon.lock() else {
+        return Response::failure("Internal error", "Could not lock the lexicon");
+    };
+    let word_set = lexicon.words.entry(c).or_insert_with(BTreeMap::new);
+    if word_set.contains_key(&word) {
+        return Response::failure("Query error", "The word already exists in the lexicon.");
+    }
+    word_set.insert(word.clone(), description);
+    if !update_lexicon(&handler.config, &lexicon) {
+        return Response::failure("Update error", "The lexicon could not be updated.");
+    }
+    if !update_lexicon_git(&handler.config, &format!("[lexicon] Add {word}")) {
+        return Response::failure("Git error", "The lexicon could not be pushed to Git.");
+    }
+    Response::success(
+        "Success",
+        format!("Successfully updated lexicon entry for word '{word}'."),
+    )
+}
+
+pub async fn handle_update(handler: &Handler, submission: &mut ModalSubmitInteraction) -> Response {
+    let mut rows = submission.data.components.drain(..);
+    let mut first = rows.next().unwrap().components.into_iter();
+    let mut second = rows.next().unwrap().components.into_iter();
+    let word = first.next().unwrap();
+    let ActionRowComponent::InputText(word) = word else {unreachable!()};
+    let word = word.value;
+    let description = second.next().unwrap();
+    let ActionRowComponent::InputText(description) = description else {unreachable!()};
+    let description = description.value;
+    let c = word.chars().next().unwrap().to_uppercase().next().unwrap();
+    let Ok(mut lexicon) = handler.lexicon.lock() else {
+        return Response::failure("Internal error", "Could not lock the lexicon");
+    };
+    let Some(word_set) = lexicon.words.get_mut(&c) else {
+        return Response::failure("Query error", "The word could not be found.");
+    };
+    let Some(entry) = word_set.get_mut(&word) else {
+        return Response::failure("Query error", "The word could not be found.");
+    };
+    if entry == &description {
+        return Response::success("Success", "Nothing changed.");
+    }
+    *entry = description;
+    if !update_lexicon(&handler.config, &lexicon) {
+        return Response::failure("Update error", "The lexicon could not be updated.");
+    }
+    if !update_lexicon_git(&handler.config, &format!("[lexicon] Update {word}")) {
+        return Response::failure("Git error", "The lexicon could not be pushed to Git.");
+    }
+    Response::success(
+        "Success",
+        format!("Successfully updated lexicon entry for word '{word}'."),
+    )
 }
 
 pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicationCommand {
@@ -152,23 +225,6 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
                 .name("add")
                 .description("Add a lexicon entry")
                 .kind(CommandOptionType::SubCommand)
-                .create_sub_option(|option| {
-                    option
-                        .name("word")
-                        .description("The word")
-                        .kind(CommandOptionType::String)
-                        .required(true)
-                        .min_length(2)
-                        .max_length(50)
-                })
-                .create_sub_option(|option| {
-                    option
-                        .name("description")
-                        .description("The description")
-                        .kind(CommandOptionType::String)
-                        .required(true)
-                        .max_length(6000)
-                })
         })
         .create_option(|option| {
             option
@@ -190,23 +246,6 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
                 .name("update")
                 .description("Update a lexicon entry")
                 .kind(CommandOptionType::SubCommand)
-                .create_sub_option(|option| {
-                    option
-                        .name("word")
-                        .description("The word")
-                        .kind(CommandOptionType::String)
-                        .required(true)
-                        .min_length(2)
-                        .max_length(50)
-                })
-                .create_sub_option(|option| {
-                    option
-                        .name("description")
-                        .description("The new description")
-                        .kind(CommandOptionType::String)
-                        .required(true)
-                        .max_length(6000)
-                })
         })
 }
 
