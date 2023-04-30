@@ -206,6 +206,36 @@ pub fn run(handler: &Handler, user: &User, options: &[CommandDataOption]) -> Res
             }
             Response::success("Success", "The word got removed.")
         }
+        "list" => {
+            let options = &option.options;
+            if option.options.len() != 1 {
+                return Response::invalid_command();
+            }
+            let Some(Value::String(lexicon_name)) = &options[0].value else {
+                return Response::invalid_command();
+            };
+            let mut lexicon = None;
+            for lexicon_ in &handler.lexicons {
+                let guard = lexicon_.lock().unwrap();
+                if &guard.name == lexicon_name {
+                    lexicon = Some(guard);
+                    break;
+                }
+            }
+            let Some(lexicon) = lexicon else {
+                return Response::failure("List entry error", "The lexicon could not be found.");
+            };
+            let mut list = String::new();
+            list.push_str("```");
+            for word_set in lexicon.words.values() {
+                for word in word_set.keys() {
+                    list.push_str(word);
+                    list.push('\n');
+                }
+            }
+            list.push_str("```");
+            Response::success("List", list)
+        }
         _ => Response::unimplemented(),
     }
 }
@@ -392,6 +422,26 @@ pub fn register<'a>(
                         .required(true)
                         .min_length(2)
                         .max_length(50)
+                })
+        })
+        .create_option(|option| {
+            option
+                .name("list")
+                .description("List the entries of a lexicon")
+                .kind(CommandOptionType::SubCommand)
+                .create_sub_option(|option| {
+                    option
+                        .name("lexicon")
+                        .description("The lexicon")
+                        .kind(CommandOptionType::String)
+                        .required(true)
+                        .min_length(1)
+                        .max_length(50);
+                    for lexicon in &handler.lexicons {
+                        let lexicon = lexicon.lock().unwrap();
+                        option.add_string_choice(&lexicon.name, &lexicon.name);
+                    }
+                    option
                 })
         })
 }
