@@ -110,7 +110,7 @@ impl Response {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message.ephemeral(true).embed(|embed| {
+                        message.embed(|embed| {
                             embed.title(title).description(text).color(if success {
                                 Color::from_rgb(0x4b, 0xb5, 0x43)
                             } else {
@@ -182,6 +182,10 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match interaction {
             Interaction::ApplicationCommand(command) => {
+                if command.guild_id.is_none() {
+                    println!("{} (DM) /{} - blocked", command.user, command.data.name);
+                    return;
+                }
                 println!("{} /{}", command.user, command.data.name);
                 let content = match command.data.name.as_str() {
                     "lexicon" => commands::lexicon::run(self, &command.user, &command.data.options),
@@ -199,6 +203,13 @@ impl EventHandler for Handler {
                 }
             }
             Interaction::ModalSubmit(mut submission) => {
+                if submission.guild_id.is_none() {
+                    println!(
+                        "{} (DM) modal:{} - blocked",
+                        submission.user, submission.data.custom_id
+                    );
+                    return;
+                }
                 let Ok(custom_id) = submission.data.custom_id.parse() else {
                     eprintln!("Cannot parse modal submission");
                     return;
