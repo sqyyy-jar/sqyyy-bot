@@ -447,6 +447,9 @@ pub fn register<'a>(
 }
 
 fn update_lexicon(config: &Config, lexicon: &Lexicon) -> bool {
+    if !git::pull(&config.git) {
+        return false;
+    }
     let mut path = config.git.path.clone();
     path.push(&lexicon.file);
     let Ok(ser) = ron::to_string(&lexicon.words) else {

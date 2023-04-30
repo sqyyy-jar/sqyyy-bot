@@ -73,6 +73,10 @@ pub fn commit(config: &GitConfig, message: &str) -> bool {
     run(config, &["commit", "-m", message])
 }
 
+pub fn pull(config: &GitConfig) -> bool {
+    run(config, &["pull"])
+}
+
 pub fn push(config: &GitConfig) -> bool {
     run(config, &["push"])
 }
