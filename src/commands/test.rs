@@ -10,7 +10,7 @@ use crate::{Modal, Response};
 
 pub fn run(_options: &[CommandDataOption]) -> Response {
     Response::modal(
-        |msg| {
+        |_, msg| {
             msg.title("Test modal");
             msg.components(|components| {
                 components.create_action_row(|row| {

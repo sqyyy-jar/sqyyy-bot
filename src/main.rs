@@ -1,14 +1,14 @@
 mod commands;
 mod git;
 
-use std::{collections::HashMap, fs, path::PathBuf, process::exit, sync::Mutex};
+use std::{collections::HashMap, fs, mem, path::PathBuf, process::exit, sync::Mutex};
 
-use commands::lexicon::{load, Lexicon};
+use commands::lexicon::{create_add_modal, create_update_modal, load, Lexicon};
 use git::setup;
 use serde::Deserialize;
 use serenity::{
     async_trait,
-    builder::{CreateInteractionResponse, CreateInteractionResponseData},
+    builder::{CreateComponents, CreateInteractionResponse, CreateInteractionResponseData},
     model::prelude::{
         command::Command,
         interaction::{Interaction, InteractionResponseType},
@@ -24,7 +24,7 @@ use serenity::{
 pub struct Config {
     discord: DiscordConfig,
     git: GitConfig,
-    lexicon: LexiconConfig,
+    lexicons: Vec<LexiconConfig>,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +46,7 @@ pub struct GitConfig {
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LexiconConfig {
+    name: String,
     file: PathBuf,
     target_file: PathBuf,
 }
@@ -57,7 +58,7 @@ pub enum Response {
         text: String,
     },
     Modal {
-        creation: fn(&mut CreateInteractionResponseData),
+        creation: fn(&Handler, &mut CreateInteractionResponseData),
         modal: Modal,
     },
 }
@@ -95,15 +96,11 @@ impl Response {
         }
     }
 
-    pub fn modal(creation: fn(&mut CreateInteractionResponseData), modal: Modal) -> Self {
+    pub fn modal(creation: fn(&Handler, &mut CreateInteractionResponseData), modal: Modal) -> Self {
         Self::Modal { creation, modal }
     }
 
-    pub fn handle(
-        self,
-        response: &mut CreateInteractionResponse<'_>,
-        modals: &Mutex<(u64, HashMap<u64, Modal>)>,
-    ) {
+    pub fn handle(self, handler: &Handler, response: &mut CreateInteractionResponse<'_>) {
         match self {
             Response::Regular {
                 success,
@@ -123,12 +120,12 @@ impl Response {
                     });
             }
             Response::Modal { creation, modal } => {
-                let mut modals = modals.lock().unwrap();
+                let mut modals = handler.modals.lock().unwrap();
                 let id = modals.0;
                 response
                     .kind(InteractionResponseType::Modal)
                     .interaction_response_data(|message| {
-                        creation(message);
+                        creation(handler, message);
                         message.custom_id(id)
                     });
                 modals.1.insert(id, modal);
@@ -140,22 +137,42 @@ impl Response {
 
 pub enum Modal {
     Test,
-    LexiconAdd,
-    LexiconUpdate,
+    LexiconAdd { index: usize },
+    LexiconUpdate { index: usize },
 }
 
 pub struct Handler {
     config: Config,
-    lexicon: Mutex<Lexicon>,
+    lexicons: Vec<Mutex<Lexicon>>,
     modals: Mutex<(u64, HashMap<u64, Modal>)>,
+    lexicon_add_modal: CreateComponents,
+    lexicon_update_modal: CreateComponents,
 }
 
 impl Handler {
-    pub fn new(config: Config, lexicon: Lexicon) -> Self {
+    pub fn load(mut config: Config) -> Self {
+        if config.lexicons.is_empty() {
+            eprintln!("No lexicons present");
+            exit(1);
+        }
+        if config.lexicons.len() > 25 {
+            eprintln!("Too many lexicons (max. 25)");
+            exit(1);
+        }
+        let mut lexicons = Vec::with_capacity(config.lexicons.len());
+        let lexicon_configs = mem::take(&mut config.lexicons);
+        for lexicon_config in lexicon_configs {
+            let lexicon = load(&config, lexicon_config);
+            lexicons.push(Mutex::new(lexicon));
+        }
+        let lexicon_add_modal = create_add_modal();
+        let lexicon_update_modal = create_update_modal();
         Self {
             config,
-            lexicon: Mutex::new(lexicon),
             modals: Mutex::new((0, HashMap::new())),
+            lexicons,
+            lexicon_add_modal,
+            lexicon_update_modal,
         }
     }
 }
@@ -165,15 +182,15 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match interaction {
             Interaction::ApplicationCommand(command) => {
-                println!("{} /{}", command.user.mention(), command.data.name);
+                println!("{} /{}", command.user, command.data.name);
                 let content = match command.data.name.as_str() {
-                    "lexicon" => commands::lexicon::run(self, &command.data.options),
+                    "lexicon" => commands::lexicon::run(self, &command.user, &command.data.options),
                     "test" => commands::test::run(&command.data.options),
                     _ => Response::unimplemented(),
                 };
                 if let Err(why) = command
                     .create_interaction_response(&ctx.http, move |response| {
-                        content.handle(response, &self.modals);
+                        content.handle(self, response);
                         response
                     })
                     .await
@@ -182,29 +199,33 @@ impl EventHandler for Handler {
                 }
             }
             Interaction::ModalSubmit(mut submission) => {
-                let custom_id: u64 = submission.data.custom_id.parse::<u64>().unwrap();
+                let Ok(custom_id) = submission.data.custom_id.parse() else {
+                    eprintln!("Cannot parse modal submission");
+                    return;
+                };
                 let modal = {
                     let mut modals = self.modals.lock().unwrap();
-                    let Some(modal) = modals.1.remove(&custom_id) else {
-                        return;
+                    modals.1.remove(&custom_id)
+                };
+                if let Some(modal) = modal {
+                    let content = match modal {
+                        Modal::Test => commands::test::handle_modal(&mut submission).await,
+                        Modal::LexiconAdd { index } => {
+                            commands::lexicon::handle_add(self, index, &mut submission).await
+                        }
+                        Modal::LexiconUpdate { index } => {
+                            commands::lexicon::handle_update(self, index, &mut submission).await
+                        }
                     };
-                    modal
-                };
-                let content = match modal {
-                    Modal::Test => commands::test::handle_modal(&mut submission).await,
-                    Modal::LexiconAdd => commands::lexicon::handle_add(self, &mut submission).await,
-                    Modal::LexiconUpdate => {
-                        commands::lexicon::handle_update(self, &mut submission).await
+                    if let Err(why) = submission
+                        .create_interaction_response(&ctx.http, |response| {
+                            content.handle(self, response);
+                            response
+                        })
+                        .await
+                    {
+                        eprintln!("Cannot respond to slash command: {}", why);
                     }
-                };
-                if let Err(why) = submission
-                    .create_interaction_response(&ctx.http, |response| {
-                        content.handle(response, &self.modals);
-                        response
-                    })
-                    .await
-                {
-                    eprintln!("Cannot respond to slash command: {}", why);
                 }
             }
             _ => {}
@@ -214,7 +235,7 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         Command::create_global_application_command(&ctx.http, |command| {
-            commands::lexicon::register(command)
+            commands::lexicon::register(self, command)
         })
         .await
         .expect("Create lexicon command");
@@ -240,9 +261,8 @@ async fn main() {
     }
     let config: Config = config.unwrap();
     setup(&config.git);
-    let lexicon = load(&config);
     let mut client = Client::builder(&config.discord.token, GatewayIntents::empty())
-        .event_handler(Handler::new(config, lexicon))
+        .event_handler(Handler::load(config))
         .await
         .expect("Error creating client");
     if let Err(err) = client.start().await {
