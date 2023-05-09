@@ -6,6 +6,12 @@ edition = "2021"
 [dependencies]
 ron = "0.8.0"
 serde = "1.0.160"
-serenity = { version = "0.11.5", default-features = false, features = ["client", "gateway", "rustls_backend", "model"] }
+serenity = { version = "0.11.5", default-features = false, features = [
+    "client",
+    "gateway",
+    "rustls_backend",
+    "model",
+] }
 tokio = { version = "1.28.0", features = ["macros", "rt-multi-thread"] }
 toml = "0.7.3"
+emulator = { git = "https://github.com/sqyyy-jar/emulator.git" }

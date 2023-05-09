@@ -1,5 +1,6 @@
 mod commands;
 mod git;
+mod parser;
 
 use std::{collections::HashMap, fs, mem, path::PathBuf, process::exit, sync::Mutex};
 
@@ -120,16 +121,30 @@ impl Response {
                     });
             }
             Response::Modal { creation, modal } => {
-                let mut modals = handler.modals.lock().unwrap();
-                let id = modals.0;
+                let id = match modal {
+                    Modal::Test => "test".to_string(),
+                    Modal::LexiconAdd { .. } => {
+                        let mut modals = handler.modals.lock().unwrap();
+                        let id = modals.0;
+                        modals.1.insert(id, modal);
+                        modals.0 += 1;
+                        id.to_string()
+                    }
+                    Modal::LexiconUpdate { .. } => {
+                        let mut modals = handler.modals.lock().unwrap();
+                        let id = modals.0;
+                        modals.1.insert(id, modal);
+                        modals.0 += 1;
+                        id.to_string()
+                    }
+                    Modal::Emulate => "emulate".to_string(),
+                };
                 response
                     .kind(InteractionResponseType::Modal)
                     .interaction_response_data(|message| {
                         creation(handler, message);
                         message.custom_id(id)
                     });
-                modals.1.insert(id, modal);
-                modals.0 += 1;
             }
         }
     }
@@ -139,6 +154,7 @@ pub enum Modal {
     Test,
     LexiconAdd { index: usize },
     LexiconUpdate { index: usize },
+    Emulate,
 }
 
 pub struct Handler {
@@ -189,6 +205,7 @@ impl EventHandler for Handler {
                 println!("{} /{}", command.user, command.data.name);
                 let content = match command.data.name.as_str() {
                     "lexicon" => commands::lexicon::run(self, &command.user, &command.data.options),
+                    "emulate" => commands::emulate::run(&command.data.options),
                     "test" => commands::test::run(&command.data.options),
                     _ => Response::unimplemented(),
                 };
@@ -210,33 +227,44 @@ impl EventHandler for Handler {
                     );
                     return;
                 }
-                let Ok(custom_id) = submission.data.custom_id.parse() else {
-                    eprintln!("Cannot parse modal submission");
-                    return;
-                };
-                let modal = {
-                    let mut modals = self.modals.lock().unwrap();
-                    modals.1.remove(&custom_id)
-                };
-                if let Some(modal) = modal {
-                    let content = match modal {
-                        Modal::Test => commands::test::handle_modal(&mut submission).await,
-                        Modal::LexiconAdd { index } => {
-                            commands::lexicon::handle_add(self, index, &mut submission).await
+                let custom_id = submission.data.custom_id.as_str();
+                let content = match custom_id {
+                    "test" => commands::test::handle_modal(&mut submission).await,
+                    "emulate" => commands::emulate::handle_modal(&mut submission).await,
+                    _ => {
+                        let Ok(custom_id) = submission.data.custom_id.parse() else {
+                            eprintln!("Cannot parse modal submission");
+                            return;
+                        };
+                        let modal = {
+                            let mut modals = self.modals.lock().unwrap();
+                            modals.1.remove(&custom_id)
+                        };
+                        let Some(modal) = modal else {
+                            return;
+                        };
+                        match modal {
+                            Modal::Test => commands::test::handle_modal(&mut submission).await,
+                            Modal::LexiconAdd { index } => {
+                                commands::lexicon::handle_add(self, index, &mut submission).await
+                            }
+                            Modal::LexiconUpdate { index } => {
+                                commands::lexicon::handle_update(self, index, &mut submission).await
+                            }
+                            Modal::Emulate => {
+                                commands::emulate::handle_modal(&mut submission).await
+                            }
                         }
-                        Modal::LexiconUpdate { index } => {
-                            commands::lexicon::handle_update(self, index, &mut submission).await
-                        }
-                    };
-                    if let Err(why) = submission
-                        .create_interaction_response(&ctx.http, |response| {
-                            content.handle(self, response);
-                            response
-                        })
-                        .await
-                    {
-                        eprintln!("Cannot respond to slash command: {}", why);
                     }
+                };
+                if let Err(why) = submission
+                    .create_interaction_response(&ctx.http, |response| {
+                        content.handle(self, response);
+                        response
+                    })
+                    .await
+                {
+                    eprintln!("Cannot respond to slash command: {}", why);
                 }
             }
             _ => {}
@@ -250,6 +278,11 @@ impl EventHandler for Handler {
         })
         .await
         .expect("Create lexicon command");
+        Command::create_global_application_command(&ctx.http, |command| {
+            commands::emulate::register(command)
+        })
+        .await
+        .expect("Create emulate command");
         Command::create_global_application_command(&ctx.http, |command| {
             commands::test::register(command)
         })
