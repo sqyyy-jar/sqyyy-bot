@@ -1,6 +1,6 @@
 use std::{fmt::Display, iter::Peekable, str::Chars};
 
-use emulator::emulator::{and, input, not, or, Component};
+use emulator::emulator::{and, input, not, or, xor, Component};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -177,6 +177,13 @@ pub fn parse(tokens: &[Token]) -> Result<(usize, Component)> {
                                 not(or(top.1))
                             } else {
                                 or(top.1)
+                            });
+                        }
+                        "xor" => {
+                            stack.last_mut().unwrap().1.push(if inverted {
+                                not(xor(top.1))
+                            } else {
+                                xor(top.1)
                             });
                         }
                         _ => {
